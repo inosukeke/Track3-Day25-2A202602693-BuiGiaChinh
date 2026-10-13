@@ -25,7 +25,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from gameday_lab.sim.contracts import (  # noqa: F401
+from gameday_lab.sim.contracts import (
     Action,
     Answer,
     Attempt,
@@ -83,7 +83,29 @@ class SemanticCache:
         * on a hit: set ``entry.last_used = now`` and return
           CacheHit(answer, similarity, age_s, fresh=age_s <= ttl_s)
         """
-        raise NotImplementedError("TODO(student): SemanticCache.lookup()")
+        if req.personal:
+            return None
+        best: CacheHit | None = None
+        best_entry: Entry | None = None
+        expired: list[Entry] = []
+        for entry in self.entries:
+            age = now - entry.stored_at
+            if age > self.ttl_s + self.max_stale_s:
+                expired.append(entry)
+                continue
+            if entry.answer.prompt_version != req.prompt_version:
+                continue
+            sim = cosine(req.embedding, entry.embedding)
+            if sim < self.similarity_threshold:
+                continue
+            if best is None or sim > best.similarity:
+                best = CacheHit(entry.answer, sim, age, fresh=age <= self.ttl_s)
+                best_entry = entry
+        if expired:
+            self.entries = [e for e in self.entries if e not in expired]
+        if best_entry is not None:
+            best_entry.last_used = now
+        return best
 
     def store(self, req: Request, answer: Answer, now: float) -> None:
         """TODO(student): remember ``answer`` for ``req``.
@@ -94,11 +116,27 @@ class SemanticCache:
         * otherwise append; if there are now more than max_entries, evict the
           least recently used entry (smallest ``last_used``)
         """
-        raise NotImplementedError("TODO(student): SemanticCache.store()")
+        if req.personal:
+            return
+        for entry in self.entries:
+            if entry.answer.prompt_version != req.prompt_version:
+                continue
+            if cosine(req.embedding, entry.embedding) >= self.similarity_threshold:
+                entry.embedding = req.embedding
+                entry.answer = answer
+                entry.stored_at = now
+                entry.last_used = now
+                return
+        self.entries.append(Entry(req.embedding, answer, now, now))
+        if len(self.entries) > self.max_entries:
+            lru = min(self.entries, key=lambda e: e.last_used)
+            self.entries.remove(lru)
 
     def invalidate(self, source: str, now: float) -> int:
-        """TODO(student): drop every entry whose ``answer.sources`` contains ``source``; return how many."""
-        raise NotImplementedError("TODO(student): SemanticCache.invalidate()")
+        """Drop every entry whose ``answer.sources`` contains ``source``; return how many."""
+        before = len(self.entries)
+        self.entries = [e for e in self.entries if source not in e.answer.sources]
+        return before - len(self.entries)
 
 
 class CachingClient(BaseClient):
@@ -121,20 +159,27 @@ class CachingClient(BaseClient):
           (no provider is called at all)
         * otherwise ask ``self.inner.start(...)`` and pass its action through ``_or_stale``
         """
-        raise NotImplementedError("TODO(student): CachingClient.start()")
+        if call.request is not None:
+            hit = self.cache.lookup(call.request, now)
+            if hit is not None and hit.fresh:
+                return Serve(hit.answer, stale=False)
+        return self._or_stale(call, self.inner.start(call, now), now)
 
     def on_success(self, attempt: Attempt, now: float, latency_s: float) -> None:
-        """TODO(student): tell the inner client first (its breaker needs the result),
+        """Tell the inner client first (its breaker needs the result),
         then store ``attempt.call.answer`` if the call carries a request and an answer."""
-        raise NotImplementedError("TODO(student): CachingClient.on_success()")
+        self.inner.on_success(attempt, now, latency_s)
+        call = attempt.call
+        if call.request is not None and call.answer is not None:
+            self.cache.store(call.request, call.answer, now)
 
     def on_error(self, attempt: Attempt, err: ProviderError, now: float) -> Action:
-        """TODO(student): ``self.inner.on_error(...)``, passed through ``_or_stale``."""
-        raise NotImplementedError("TODO(student): CachingClient.on_error()")
+        """``self.inner.on_error(...)``, passed through ``_or_stale``."""
+        return self._or_stale(attempt.call, self.inner.on_error(attempt, err, now), now)
 
     def on_content_update(self, source: str, now: float) -> None:
-        """TODO(student): a document changed (webhook) — invalidate the answers built on it."""
-        raise NotImplementedError("TODO(student): CachingClient.on_content_update()")
+        """A document changed (webhook) — invalidate the answers built on it."""
+        self.cache.invalidate(source, now)
 
     def _or_stale(self, call: CallContext, action: Action, now: float) -> Action:
         """TODO(student): stale-if-error.
@@ -143,4 +188,9 @@ class CachingClient(BaseClient):
         *again now* (an invalidation may have happened meanwhile): any hit ->
         Serve(hit.answer, stale=not hit.fresh). Otherwise return ``action`` unchanged.
         """
-        raise NotImplementedError("TODO(student): CachingClient._or_stale()")
+        if not isinstance(action, GiveUp) or call.request is None:
+            return action
+        hit = self.cache.lookup(call.request, now)
+        if hit is None:
+            return action
+        return Serve(hit.answer, stale=not hit.fresh)

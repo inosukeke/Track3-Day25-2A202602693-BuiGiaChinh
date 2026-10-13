@@ -28,7 +28,11 @@ fallback_order: [alpha, alpha-eu, beta, gamma-mini]
 # YOUR client settings (read by ResilientClient). Tune them, explain them.
 # ----------------------------------------------------------------------------
 client:
-  attempt_timeout_s: 8.0
+  # Attempt timeout: provider medians are 1.2-1.8 s; 4 s absorbs normal queueing
+  # but cuts a hung attempt (G6 alpha-eu) fast enough that failover still fits
+  # the 30 s deadline with a retry. 8 s double-hang burned 16 s (G2 p95 > 10 s);
+  # 3 s made healthy queue spikes look like timeouts (more retries, worse p95).
+  attempt_timeout_s: 4.0
   max_attempts_per_provider: 2      # 1 retry on the same provider, then fail over
   min_time_left_s: 1.0              # don't start an attempt that cannot finish
   backoff_base_s: 0.25
@@ -53,7 +57,15 @@ client:
 # wrong_answers_by_reason, tune each value and justify it in report section 8.
 # ----------------------------------------------------------------------------
 cache:
-  similarity_threshold: 0.80
-  ttl_s: 600
-  max_stale_s: 0
+  # 0.80 matched distinct FAQ questions ("other_question"): cosine >= 0.92 only
+  # catches paraphrases of the same question. Personal questions are never stored.
+  similarity_threshold: 0.92
+  # The C1 outage is 120 s (240-360 s). ttl 120 s keeps most answers fresh only
+  # up to the next event; after the t=420 prompt deploy an answer older than
+  # 120 s is already expired, so it is never served as outdated.
+  ttl_s: 90
+  # stale-if-error window: longer than the 120 s outage so faq_availability
+  # stays high, but short enough that a stale answer is never used outside an
+  # actual provider failure.
+  max_stale_s: 300
   max_entries: 500
