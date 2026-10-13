@@ -1,6 +1,6 @@
 # Lab 25B — Report
 
-**Họ tên / nhóm:** Bùi Gia Chính — 2A202602693  **Commit:** (xem `git log -1`)  **Điểm tự động (`make grade`):** 84 / 88
+**Họ tên / nhóm:** Bùi Gia Chính — 2A202602693  **Commit:** 12e59558a3a2e703d1f9f70c869770160bbc9468  **Điểm tự động (`make grade`):** 84 / 88
 
 > Mọi nhận định đều có số, lấy từ `reports/gameday/*.json`, `reports/cache/*.json`, `reports/workflows.json`, `reports/slo.json`.
 
